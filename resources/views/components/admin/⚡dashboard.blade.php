@@ -4,43 +4,95 @@ use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use App\Models\Menu;
+use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\User;
 
 new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] class extends Component
 {
-    // TODO: replace the sample data below with Eloquent queries
-    // once the orders / dishes tables exist.
-
     #[Computed]
     public function stats(): array
     {
+        $sales = fn($date) => (float) Order::where('status', 'completed')
+            ->whereDate('created_at', $date)
+            ->sum('total');
+
+        $today = $sales(today());
+        $yesterday = $sales(today()->subDay());
+        $change = $yesterday > 0 ? round(($today - $yesterday) / $yesterday * 100) : null;
+
+        $pending = Order::where('status', 'pending')->count();
+        $outOfStock = Menu::where('available', false)->count();
+
+        // adjust to however you mark customers
+        $customers = User::where('role', 'customer');
+        $newCustomers = (clone $customers)->where('created_at', '>=', now()->subWeek())->count();
+
         return [
-            ['label' => "Today's Sales",  'value' => '₱4,250.00', 'icon' => 'banknote',  'note' => '+12% vs yesterday', 'badge' => 'bg-emerald-100 text-emerald-600'],
-            ['label' => 'Total Orders',   'value' => '48',        'icon' => 'receipt',   'note' => '6 pending now',     'badge' => 'bg-amber-100 text-amber-600'],
-            ['label' => 'Dishes on Menu', 'value' => '14',        'icon' => 'utensils',  'note' => '2 out of stock',    'badge' => 'bg-sky-100 text-sky-600'],
-            ['label' => 'Customers',      'value' => '126',       'icon' => 'users',     'note' => '+5 this week',      'badge' => 'bg-violet-100 text-violet-600'],
+            [
+                'label' => "Today's Sales",
+                'value' => '₱' . number_format($today, 2),
+                'icon'  => 'banknote',
+                'note'  => $change === null ? 'No sales yesterday' : sprintf('%+d%% vs yesterday', $change),
+                'badge' => 'bg-emerald-100 text-emerald-600',
+            ],
+            [
+                'label' => 'Total Orders',
+                'value' => (string) Order::whereDate('created_at', today())->count(),
+                'icon'  => 'receipt',
+                'note'  => "{$pending} pending now",
+                'badge' => 'bg-amber-100 text-amber-600',
+            ],
+            [
+                'label' => 'Dishes on Menu',
+                'value' => (string) Menu::count(),
+                'icon'  => 'utensils',
+                'note'  => "{$outOfStock} out of stock",
+                'badge' => 'bg-sky-100 text-sky-600',
+            ],
+            [
+                'label' => 'Customers',
+                'value' => (string) $customers->count(),
+                'icon'  => 'users',
+                'note'  => "+{$newCustomers} this week",
+                'badge' => 'bg-violet-100 text-violet-600',
+            ],
         ];
     }
 
     #[Computed]
     public function recentOrders(): array
     {
-        return [
-            ['id' => '#1048', 'customer' => 'Juan Dela Cruz', 'items' => 'Pork Adobo x2',        'total' => '₱170.00', 'status' => 'pending'],
-            ['id' => '#1047', 'customer' => 'Maria Santos',   'items' => 'Sinigang na Baboy x1', 'total' => '₱90.00',  'status' => 'preparing'],
-            ['id' => '#1046', 'customer' => 'Pedro Reyes',    'items' => 'Chicken Menudo x3',    'total' => '₱225.00', 'status' => 'ready'],
-            ['id' => '#1045', 'customer' => 'Ana Lopez',      'items' => 'Pork Adobo x1, Rice',  'total' => '₱95.00',  'status' => 'completed'],
-        ];
+        return Order::with('items.menu')
+            ->latest()
+            ->take(5)
+            ->get()
+            ->map(fn($o) => [
+                'id'       => '#' . $o->id,
+                'customer' => $o->name,
+                'items'    => $o->items->map(fn($i) => $i->menu->name . ' x' . $i->quantity)->implode(', '),
+                'total'    => '₱' . number_format($o->total, 2),
+                'status'   => $o->status,
+            ])
+            ->all();
     }
 
     #[Computed]
     public function topDishes(): array
     {
-        return [
-            ['name' => 'Pork Adobo',        'sold' => 32],
-            ['name' => 'Sinigang na Baboy', 'sold' => 24],
-            ['name' => 'Chicken Menudo',    'sold' => 18],
-            ['name' => 'Pinakbet',          'sold' => 11],
-        ];
+        return OrderItem::query()
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->join('menus', 'menus.id', '=', 'order_items.menu_id')
+            ->where('orders.status', '!=', 'cancelled')
+            ->whereDate('orders.created_at', today())
+            ->selectRaw('menus.name, SUM(order_items.quantity) as sold')
+            ->groupBy('menus.id', 'menus.name')
+            ->orderByDesc('sold')
+            ->limit(4)
+            ->get()
+            ->map(fn($r) => ['name' => $r->name, 'sold' => (int) $r->sold])
+            ->all();
     }
 };
 ?>
@@ -51,11 +103,12 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
         'preparing' => 'bg-sky-100 text-sky-700',
         'ready'     => 'bg-emerald-100 text-emerald-700',
         'completed' => 'bg-slate-100 text-slate-600',
+        'cancelled' => 'bg-rose-100 text-rose-700',
     ];
-    $maxSold = max(array_column($this->topDishes, 'sold'));
+    $maxSold = max(array_merge([1], array_column($this->topDishes, 'sold')));
 @endphp
 
-<div class="space-y-8">
+<div class="space-y-8" wire:poll.30s>
 
     <!-- Heading -->
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
@@ -66,10 +119,10 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
             </p>
         </div>
         <div class="flex gap-3">
-            <a href="#" class="inline-flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all">
+            <a href="{{ route('admin.orders') }}" class="inline-flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all">
                 <i data-lucide="clipboard-list" class="w-4 h-4"></i> View Orders
             </a>
-            <a href="#" class="inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold shadow-md shadow-amber-200 transition-all">
+            <a href="{{ route('admin.menu') }}" class="inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold shadow-md shadow-amber-200 transition-all">
                 <i data-lucide="plus" class="w-4 h-4"></i> Add Dish
             </a>
         </div>
@@ -78,7 +131,7 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
     <!-- Stat cards -->
     <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
         @foreach ($this->stats as $stat)
-            <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex items-start justify-between">
+            <div wire:key="stat-{{ $loop->index }}" class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex items-start justify-between">
                 <div>
                     <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ $stat['label'] }}</p>
                     <p class="mt-2 text-2xl font-extrabold text-slate-900">{{ $stat['value'] }}</p>
@@ -112,19 +165,23 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
-                        @foreach ($this->recentOrders as $order)
-                            <tr class="hover:bg-slate-50/70 transition-colors">
+                        @forelse ($this->recentOrders as $order)
+                            <tr wire:key="order-{{ $order['id'] }}" class="hover:bg-slate-50/70 transition-colors">
                                 <td class="px-6 py-3.5 font-semibold text-slate-800">{{ $order['id'] }}</td>
                                 <td class="px-6 py-3.5 text-slate-600">{{ $order['customer'] }}</td>
                                 <td class="px-6 py-3.5 text-slate-500 hidden sm:table-cell">{{ $order['items'] }}</td>
                                 <td class="px-6 py-3.5 font-semibold text-slate-800">{{ $order['total'] }}</td>
                                 <td class="px-6 py-3.5">
-                                    <span class="px-2.5 py-1 rounded-full text-xs font-medium capitalize {{ $statusStyles[$order['status']] }}">
+                                    <span class="px-2.5 py-1 rounded-full text-xs font-medium capitalize {{ $statusStyles[$order['status']] ?? 'bg-slate-100 text-slate-600' }}">
                                         {{ $order['status'] }}
                                     </span>
                                 </td>
                             </tr>
-                        @endforeach
+                        @empty
+                            <tr>
+                                <td colspan="5" class="px-6 py-10 text-center text-slate-500">No orders yet.</td>
+                            </tr>
+                        @endforelse
                     </tbody>
                 </table>
             </div>
@@ -138,8 +195,8 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
             </div>
 
             <ul class="p-6 space-y-5">
-                @foreach ($this->topDishes as $dish)
-                    <li>
+                @forelse ($this->topDishes as $dish)
+                    <li wire:key="dish-{{ $loop->index }}">
                         <div class="flex items-center justify-between text-sm mb-1.5">
                             <span class="font-medium text-slate-700">{{ $dish['name'] }}</span>
                             <span class="text-xs text-slate-500">{{ $dish['sold'] }} sold</span>
@@ -149,7 +206,9 @@ new #[Layout('components.layout.admin'), Title('Admin Dashboard - KarinDerya')] 
                                  style="width: {{ round($dish['sold'] / $maxSold * 100) }}%"></div>
                         </div>
                     </li>
-                @endforeach
+                @empty
+                    <li class="text-center text-sm text-slate-500 py-4">No orders yet today.</li>
+                @endforelse
             </ul>
         </section>
     </div>

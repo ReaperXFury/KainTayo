@@ -6,7 +6,7 @@
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
 
                 <a href="{{ route('customer.home') }}" wire:navigate
-                   class="flex items-center gap-2.5 text-amber-600 font-bold text-xl tracking-tight">
+                    class="flex items-center gap-2.5 text-amber-600 font-bold text-xl tracking-tight">
                     <div class="bg-amber-500 text-white p-2 rounded-xl shadow-md shadow-amber-200">
                         <i data-lucide="utensils-crossed" class="w-5 h-5"></i>
                     </div>
@@ -15,19 +15,21 @@
 
                 <nav class="hidden sm:flex items-center gap-1">
                     <a href="{{ route('customer.home') }}" wire:navigate
-                       class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium
+                        class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium
                               {{ request()->routeIs('customer.home') ? 'text-amber-600 bg-amber-50' : 'text-slate-600 hover:text-amber-600 hover:bg-amber-50' }}">
                         <i data-lucide="utensils" class="w-4 h-4"></i> Menu
                     </a>
-                    <a href="#"
-                       class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:text-amber-600 hover:bg-amber-50">
+                    <a href="{{ route('customer.my-orders') }}"
+                        class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium
+                              {{ request()->routeIs('customer.my-orders') ? 'text-amber-600 bg-amber-50' : 'text-slate-600 hover:text-amber-600 hover:bg-amber-50' }}">
                         <i data-lucide="receipt" class="w-4 h-4"></i> My Orders
                     </a>
                 </nav>
 
                 <div class="flex items-center gap-1 sm:gap-3">
-                    <a href="#" aria-label="My Orders"
-                       class="sm:hidden p-2.5 rounded-xl text-slate-600 hover:text-amber-600 hover:bg-amber-50">
+                    <a href="{{ route('customer.my-orders') }}" aria-label="My Orders"
+                        class="sm:hidden p-2.5 rounded-xl text-slate-600 hover:text-amber-600 hover:bg-amber-50
+                        {{ request()->routeIs('customer.my-orders') ? 'text-amber-600 bg-amber-50' : 'text-slate-600 hover:text-amber-600 hover:bg-amber-50' }}">
                         <i data-lucide="receipt" class="w-5 h-5"></i>
                     </a>
 

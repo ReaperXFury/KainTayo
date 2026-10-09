@@ -30,4 +30,5 @@ Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->grou
 
 Route::middleware(['auth', 'role:customer'])->prefix('customer')->name('customer.')->group(function () {
     Route::livewire('/home', 'customer.home')->name('home');
+    Route::livewire('/my-orders', 'customer.orders')->name('my-orders');
 });

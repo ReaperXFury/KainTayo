@@ -22,8 +22,10 @@
     <script>
         lucide.createIcons();
 
-        document.addEventListener('livewire:navigated', () => {
-            lucide.createIcons();
+        document.addEventListener('livewire:navigated', () => lucide.createIcons());
+
+        document.addEventListener('livewire:init', () => {
+            Livewire.hook('morphed', () => lucide.createIcons());
         });
     </script>
 

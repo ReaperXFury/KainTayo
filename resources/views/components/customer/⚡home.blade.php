@@ -4,9 +4,13 @@ use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use App\Models\Menu;
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
-new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class extends Component
-{
+new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')]
+    class extends Component {
     public string $search = '';
     public string $category = 'All';
 
@@ -17,16 +21,17 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
     #[Computed]
     public function dishes(): array
     {
-        return [
-            ['id' => 1, 'name' => 'Pork Adobo',         'desc' => 'Soy-vinegar braised pork, served with rice', 'price' => 85, 'category' => 'Ulam',    'emoji' => '🍲', 'available' => true],
-            ['id' => 2, 'name' => 'Sinigang na Baboy',  'desc' => 'Hot and sour tamarind pork soup',            'price' => 90, 'category' => 'Sabaw',   'emoji' => '🥘', 'available' => true],
-            ['id' => 3, 'name' => 'Chicken Menudo',     'desc' => 'Chicken stew in rich tomato sauce',          'price' => 75, 'category' => 'Ulam',    'emoji' => '🍛', 'available' => true],
-            ['id' => 4, 'name' => 'Pinakbet',           'desc' => 'Mixed vegetables with bagoong',              'price' => 60, 'category' => 'Gulay',   'emoji' => '🥬', 'available' => true],
-            ['id' => 5, 'name' => 'Tinolang Manok',     'desc' => 'Ginger chicken soup with papaya',            'price' => 80, 'category' => 'Sabaw',   'emoji' => '🍜', 'available' => false],
-            ['id' => 6, 'name' => 'Extra Rice',         'desc' => 'One cup of steamed rice',                    'price' => 15, 'category' => 'Add-ons', 'emoji' => '🍚', 'available' => true],
-            ['id' => 7, 'name' => 'Fried Egg',          'desc' => 'Sunny-side up egg',                          'price' => 15, 'category' => 'Add-ons', 'emoji' => '🍳', 'available' => true],
-            ['id' => 8, 'name' => 'Ginataang Kalabasa', 'desc' => 'Squash in coconut milk with shrimp',        'price' => 65, 'category' => 'Gulay',   'emoji' => '🥥', 'available' => true],
-        ];
+        return Menu::orderBy('category')->orderBy('name')->get()
+            ->map(fn($m) => [
+                'id' => $m->id,
+                'name' => $m->name,
+                'desc' => $m->details ?? '',
+                'price' => (float) $m->price,
+                'category' => $m->category,
+                'image' => $m->image_path ? Storage::url($m->image_path) : null,
+                'available' => $m->available,
+            ])
+            ->all();
     }
 
     #[Computed]
@@ -40,7 +45,7 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
     {
         return array_values(array_filter($this->dishes, function ($dish) {
             $matchesCategory = $this->category === 'All' || $dish['category'] === $this->category;
-            $matchesSearch   = $this->search === ''
+            $matchesSearch = $this->search === ''
                 || str_contains(strtolower($dish['name']), strtolower($this->search));
 
             return $matchesCategory && $matchesSearch;
@@ -53,12 +58,12 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
         $dishes = collect($this->dishes)->keyBy('id');
 
         return collect($this->cart)
-            ->filter(fn ($qty, $id) => $dishes->has($id))
-            ->map(fn ($qty, $id) => [
-                'id'       => $id,
-                'name'     => $dishes[$id]['name'],
-                'price'    => $dishes[$id]['price'],
-                'qty'      => $qty,
+            ->filter(fn($qty, $id) => $dishes->has($id))
+            ->map(fn($qty, $id) => [
+                'id' => $id,
+                'name' => $dishes[$id]['name'],
+                'price' => $dishes[$id]['price'],
+                'qty' => $qty,
                 'subtotal' => $dishes[$id]['price'] * $qty,
             ])
             ->values()
@@ -86,7 +91,7 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
     {
         $dish = collect($this->dishes)->firstWhere('id', $id);
 
-        if (! $dish || ! $dish['available']) {
+        if (!$dish || !$dish['available']) {
             return;
         }
 
@@ -95,7 +100,7 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
 
     public function decrease(int $id): void
     {
-        if (! isset($this->cart[$id])) {
+        if (!isset($this->cart[$id])) {
             return;
         }
 
@@ -117,7 +122,43 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
             return;
         }
 
-        // TODO: create the Order and OrderItem records for auth()->id() here.
+        $menus = Menu::whereIn('id', array_keys($this->cart))
+            ->where('available', true)
+            ->get()
+            ->keyBy('id');
+
+        // Drop dishes that were deleted or went out of stock
+        $valid = array_intersect_key($this->cart, $menus->all());
+
+        if (count($valid) !== count($this->cart)) {
+            $this->cart = $valid;
+            session()->flash('error', 'Some dishes are no longer available and were removed from your order.');
+            return;
+        }
+
+        DB::transaction(function () use ($menus) {
+            $order = Order::create([
+                'user_id' => auth()->id(),
+                'name' => auth()->user()->name,
+                'total' => 0,
+            ]);
+
+            $total = 0;
+
+            foreach ($this->cart as $id => $qty) {
+                $menu = $menus[$id];
+
+                $order->items()->create([
+                    'menu_id' => $menu->id,
+                    'quantity' => $qty,
+                    'price' => $menu->price, // snapshot
+                ]);
+
+                $total += $menu->price * $qty;
+            }
+
+            $order->update(['total' => round($total, 2)]);
+        });
 
         $this->cart = [];
 
@@ -127,20 +168,30 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
 ?>
 
 <div x-data="{ cartOpen: false }"
-     x-effect="document.body.classList.toggle('overflow-hidden', cartOpen && window.innerWidth < 1024)"
-     class="space-y-5 sm:space-y-8 pb-28 lg:pb-0">
+    x-effect="document.body.classList.toggle('overflow-hidden', cartOpen && window.innerWidth < 1024)"
+    class="space-y-5 sm:space-y-8 pb-28 lg:pb-0">
 
     <!-- Greeting -->
-    <div class="rounded-2xl sm:rounded-3xl bg-gradient-to-r from-amber-500 to-amber-600 text-white p-5 sm:p-8 shadow-lg shadow-amber-200">
+    <div
+        class="rounded-2xl sm:rounded-3xl bg-gradient-to-r from-amber-500 to-amber-600 text-white p-5 sm:p-8 shadow-lg shadow-amber-200">
         <p class="text-xs sm:text-sm font-medium text-amber-100">Good day,</p>
         <h1 class="text-xl sm:text-3xl font-extrabold tracking-tight truncate">{{ auth()->user()->name }}!</h1>
-        <p class="mt-1 text-xs sm:text-sm text-amber-50">What would you like to eat today? Pick from today's lutong bahay menu.</p>
+        <p class="mt-1 text-xs sm:text-sm text-amber-50">What would you like to eat today? Pick from today's lutong
+            bahay menu.</p>
     </div>
 
     @if (session('success'))
-        <div class="flex items-start gap-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-medium px-4 py-3">
+        <div
+            class="flex items-start gap-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-medium px-4 py-3">
             <i data-lucide="check-circle-2" class="w-5 h-5 shrink-0"></i>
             <span>{{ session('success') }}</span>
+        </div>
+    @endif
+    @if (session('error'))
+        <div
+            class="flex items-start gap-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm font-medium px-4 py-3">
+            <i data-lucide="alert-circle" class="w-5 h-5 shrink-0"></i>
+            <span>{{ session('error') }}</span>
         </div>
     @endif
 
@@ -159,15 +210,16 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
                         class="block w-full pl-10 pr-3 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 text-base sm:text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-all">
                 </div>
 
-                <div class="flex gap-2 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <div
+                    class="flex gap-2 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     @foreach ($this->categories as $cat)
-                        <button wire:key="cat-{{ $cat }}" wire:click="setCategory('{{ $cat }}')"
-                            class="shrink-0 whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium transition-colors
-                                   {{ $category === $cat
-                                        ? 'bg-amber-500 text-white shadow-md shadow-amber-200'
-                                        : 'bg-white text-slate-600 border border-slate-200 active:border-amber-300 active:text-amber-600' }}">
-                            {{ $cat }}
-                        </button>
+                                    <button wire:key="cat-{{ $cat }}" wire:click="setCategory('{{ $cat }}')"
+                                        class="shrink-0 whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium transition-colors
+                                                                                                   {{ $category === $cat
+                        ? 'bg-amber-500 text-white shadow-md shadow-amber-200'
+                        : 'bg-white text-slate-600 border border-slate-200 active:border-amber-300 active:text-amber-600' }}">
+                                        {{ $cat }}
+                                    </button>
                     @endforeach
                 </div>
             </div>
@@ -178,10 +230,16 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
                     @php $qty = $cart[$dish['id']] ?? 0; @endphp
 
                     <div wire:key="dish-{{ $dish['id'] }}"
-                         class="bg-white rounded-2xl border border-slate-100 shadow-sm p-3 flex items-start gap-3 {{ $dish['available'] ? '' : 'opacity-60' }}">
+                        class="bg-white rounded-2xl border border-slate-100 shadow-sm p-3 flex items-start gap-3 {{ $dish['available'] ? '' : 'opacity-60' }}">
 
-                        <div class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-xl bg-amber-50 flex items-center justify-center text-3xl">
-                            {{ $dish['emoji'] }}
+                        <div
+                            class="w-11 h-11 shrink-0 rounded-xl bg-amber-50 overflow-hidden flex items-center justify-center text-amber-300">
+                            @if ($dish['image'])
+                                <img src="{{ $dish['image'] }}" alt="{{ $dish['name'] }}" loading="lazy"
+                                    class="w-full h-full object-cover">
+                            @else
+                                <i data-lucide="image" class="w-5 h-5"></i>
+                            @endif
                         </div>
 
                         <div class="flex-1 min-w-0">
@@ -191,8 +249,10 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
                             <div class="mt-2 flex items-center justify-between gap-2">
                                 <span class="font-extrabold text-amber-600">₱{{ number_format($dish['price'], 2) }}</span>
 
-                                @if (! $dish['available'])
-                                    <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500 whitespace-nowrap">Out of stock</span>
+                                @if (!$dish['available'])
+                                    <span
+                                        class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500 whitespace-nowrap">Out
+                                        of stock</span>
                                 @elseif ($qty > 0)
                                     <div class="inline-flex items-center rounded-full bg-amber-500 text-white shadow-sm">
                                         <button wire:click="decrease({{ $dish['id'] }})" aria-label="Remove one"
@@ -224,11 +284,11 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
 
         <!-- Mobile overlay behind the cart sheet -->
         <div x-show="cartOpen" x-transition.opacity @click="cartOpen = false" style="display: none;"
-             class="fixed inset-0 z-[55] bg-slate-900/50 lg:hidden"></div>
+            class="fixed inset-0 z-[55] bg-slate-900/50 lg:hidden"></div>
 
         <!-- Cart: bottom sheet on mobile, sticky sidebar on desktop -->
         <aside :class="cartOpen ? 'translate-y-0' : 'translate-y-full'"
-               class="fixed inset-x-0 bottom-0 z-[60] max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-3xl bg-white shadow-2xl transition-transform duration-300 ease-out
+            class="fixed inset-x-0 bottom-0 z-[60] max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-3xl bg-white shadow-2xl transition-transform duration-300 ease-out
                       lg:translate-y-0 lg:sticky lg:top-24 lg:inset-x-auto lg:bottom-auto lg:z-auto lg:max-h-none lg:overflow-visible lg:rounded-2xl lg:border lg:border-slate-100 lg:shadow-sm">
 
             <!-- Sheet header -->
@@ -281,7 +341,8 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
                     @endforeach
                 </ul>
 
-                <div class="sticky bottom-0 bg-white border-t border-slate-100 px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3">
+                <div
+                    class="sticky bottom-0 bg-white border-t border-slate-100 px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3">
                     <div class="flex items-center justify-between">
                         <span class="text-sm text-slate-500">Total</span>
                         <span class="text-xl font-extrabold text-slate-900">₱{{ number_format($this->cartTotal, 2) }}</span>
@@ -296,7 +357,8 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
                 </div>
             @else
                 <div class="px-5 py-10 text-center text-sm text-slate-500">
-                    <div class="mx-auto mb-3 w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
+                    <div
+                        class="mx-auto mb-3 w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
                         <i data-lucide="shopping-cart" class="w-6 h-6"></i>
                     </div>
                     Your cart is empty.<br>Add a dish to get started.
@@ -307,12 +369,14 @@ new #[Layout('components.layout.customer'), Title('Menu - KarinDerya')] class ex
 
     <!-- Mobile: sticky "View order" bar -->
     @if ($this->cartCount > 0)
-        <div class="lg:hidden fixed inset-x-0 bottom-0 z-40 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent">
+        <div
+            class="lg:hidden fixed inset-x-0 bottom-0 z-40 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent">
             <button type="button" @click="cartOpen = true"
                 class="w-full flex items-center justify-between bg-amber-500 active:bg-amber-600 text-white rounded-2xl px-4 py-3.5 shadow-lg shadow-amber-300/50">
                 <span class="flex items-center gap-2.5">
                     <i data-lucide="shopping-bag" class="w-5 h-5"></i>
-                    <span class="text-sm font-semibold">View order · {{ $this->cartCount }} {{ Str::plural('item', $this->cartCount) }}</span>
+                    <span class="text-sm font-semibold">View order · {{ $this->cartCount }}
+                        {{ Str::plural('item', $this->cartCount) }}</span>
                 </span>
                 <span class="font-extrabold">₱{{ number_format($this->cartTotal, 2) }}</span>
             </button>
